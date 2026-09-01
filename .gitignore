@@ -1,0 +1,36 @@
+# Compiled object files
+*.o
+*.obj
+
+# Compiled binaries
+command_line
+command_line.exe
+test
+test.exe
+*.out
+
+# Simulated disk images produced by running the file system
+DISK
+TEST_DISK
+
+# Build output
+build/
+bin/
+
+# Debug symbols
+*.dSYM/
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -8,6 +8,10 @@ typedef char bool_t;
 #define TRUE 1
 #define FALSE 0
 
+// Each data block ends with a block_num_t pointing at the next block in the
+// file's chain, so only this many bytes per block actually hold file content.
+#define DATA_BYTES_PER_BLOCK (BLOCK_SIZE - (int)sizeof(block_num_t))
+
 
 static block_num_t current_dir;
 
@@ -370,7 +374,7 @@ int jfs_stat(const char* name, struct stats* buf) {
         buf->file_size = *(uint32_t*)file_block_data;
 
         // calculate the number of data blocks used by file
-        buf->num_data_blocks = (buf->file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        buf->num_data_blocks = (buf->file_size + DATA_BYTES_PER_BLOCK - 1) / DATA_BYTES_PER_BLOCK;
       } else {
         // if dir, ignore these fields
         buf->file_size = 0;
@@ -426,8 +430,22 @@ int jfs_write(const char* file_name, const void* buf, unsigned short count) {
 
         unsigned int bytes_written = 0;
         block_num_t current_data_block = *(block_num_t*)(file_inode_data + 4);
-        unsigned int current_block_offset = current_size % BLOCK_SIZE;
-        unsigned int num_blocks = (current_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        unsigned int current_block_offset = current_size % DATA_BYTES_PER_BLOCK;
+
+        // Walk the block chain to the last data block, which is where an
+        // append continues from.
+        if (current_data_block != 0) {
+          char link_buf[BLOCK_SIZE];
+          while (1) {
+            if (read_block(current_data_block, link_buf) != 0) {
+              free(file_inode_data);
+              return -1;
+            }
+            block_num_t next = *(block_num_t*)(link_buf + DATA_BYTES_PER_BLOCK);
+            if (next == 0) break;
+            current_data_block = next;
+          }
+        }
 
         while (bytes_written < count) {
           char data_block_buf[BLOCK_SIZE];
@@ -440,20 +458,24 @@ int jfs_write(const char* file_name, const void* buf, unsigned short count) {
               return E_DISK_FULL;
             }
 
+            memset(data_block_buf, 0, BLOCK_SIZE);
+
             if (prev_data_block != 0) {
-              if (read_block(prev_data_block, data_block_buf) != 0) {
+              // Link the previous block to this new one, without disturbing
+              // the content bytes already stored in it.
+              char prev_buf[BLOCK_SIZE];
+              if (read_block(prev_data_block, prev_buf) != 0) {
                 free(file_inode_data);
                 return -1;
               }
-              *(block_num_t*)(data_block_buf + BLOCK_SIZE - sizeof(block_num_t)) = current_data_block;
-              if (write_block(prev_data_block, data_block_buf) != 0) {
+              *(block_num_t*)(prev_buf + DATA_BYTES_PER_BLOCK) = current_data_block;
+              if (write_block(prev_data_block, prev_buf) != 0) {
                 free(file_inode_data);
                 return -1;
               }
             } else {
               *(block_num_t*)(file_inode_data + 4) = current_data_block;
             }
-            num_blocks++;
           } else {
             if (read_block(current_data_block, data_block_buf) != 0) {
               free(file_inode_data);
@@ -461,7 +483,10 @@ int jfs_write(const char* file_name, const void* buf, unsigned short count) {
             }
           }
 
-          unsigned int space_in_block = BLOCK_SIZE - current_block_offset;
+          // Only the first DATA_BYTES_PER_BLOCK bytes of a block hold file
+          // content; the final sizeof(block_num_t) bytes are the next-block
+          // pointer and must never be overwritten with data.
+          unsigned int space_in_block = DATA_BYTES_PER_BLOCK - current_block_offset;
           unsigned int write_size = (count - bytes_written < space_in_block) ? count - bytes_written : space_in_block;
 
           memcpy(data_block_buf + current_block_offset, (char*)buf + bytes_written, write_size);
@@ -472,11 +497,8 @@ int jfs_write(const char* file_name, const void* buf, unsigned short count) {
 
           current_size += write_size;
           bytes_written += write_size;
-          current_block_offset = (current_block_offset + write_size) % BLOCK_SIZE;
+          current_block_offset = (current_block_offset + write_size) % DATA_BYTES_PER_BLOCK;
         }
-
-        // update file inode with new last data block num
-        *(block_num_t*)(file_inode_data + 4 + (num_blocks - 1) * sizeof(block_num_t)) = current_data_block;
 
         // update inode with new file size
         *(unsigned int*)file_inode_data = current_size;
@@ -530,12 +552,14 @@ int jfs_read(const char* file_name, void* buf, unsigned short* ptr_count) {
         while (bytes_read < to_read) {
           char data_block_buf[BLOCK_SIZE];
           if (read_block(current_data_block, data_block_buf) != 0) return -1;
-          unsigned int read_size = (to_read - bytes_read > BLOCK_SIZE) ? BLOCK_SIZE : to_read - bytes_read;
+          // Mirrors jfs_write: only DATA_BYTES_PER_BLOCK bytes per block are
+          // content; the rest is the next-block pointer.
+          unsigned int read_size = (to_read - bytes_read > DATA_BYTES_PER_BLOCK) ? DATA_BYTES_PER_BLOCK : to_read - bytes_read;
 
           memcpy((char*)buf + bytes_read, data_block_buf, read_size);
           bytes_read += read_size;
           if (bytes_read < to_read) {
-            current_data_block = *(block_num_t*)(data_block_buf + BLOCK_SIZE - sizeof(block_num_t));
+            current_data_block = *(block_num_t*)(data_block_buf + DATA_BYTES_PER_BLOCK);
           }
         }
 
@@ -556,7 +580,7 @@ int jfs_read(const char* file_name, void* buf, unsigned short* ptr_count) {
  * returns 0 on success or -1 on error; errors should only occur due to
  *   errors in the underlying disk syscalls.
  */
-int jfs_unmount() {
+int jfs_unmount(void) {
   int ret = bfs_unmount();
   return ret;
 }
