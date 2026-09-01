@@ -2,8 +2,6 @@
 
 A working file system built from scratch in C — directories, files, block allocation, and persistent storage — implemented on top of a simulated block device, with an interactive shell to explore it. No OS filesystem APIs are used for the filesystem itself; everything down to the free-block bitmap is hand-implemented against raw 64-byte block reads and writes.
 
-**Status:** ✅ Builds and passes 25/25 tests natively on **Linux, macOS, and Windows**. See [CHANGELOG.md](CHANGELOG.md) for how the missing half of this project was reconstructed and what was fixed.
-
 ## Tech Stack
 
 - **C** (C11, builds with `gcc`, `clang`, or MinGW) — standard library only, zero external dependencies
